@@ -7,20 +7,25 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
-import android.util.Pair;
+import android.util.Size;
 
-import com.getbouncer.cardscan.base.ssd.ArrUtils;
 import com.getbouncer.cardscan.base.ssd.DetectedOcrBox;
-import com.getbouncer.cardscan.base.ssd.OcrPriorsGen;
-import com.getbouncer.cardscan.base.ssd.PredictionAPI;
-import com.getbouncer.cardscan.base.ssd.Result;
+import com.getbouncer.cardscan.base.ssd.DetectionBox;
+import com.getbouncer.cardscan.base.ssd.OcrPriorsGenerator;
+import com.getbouncer.cardscan.base.ssd.SSD;
+import com.getbouncer.cardscan.base.ssd.domain.ClassifierScores;
+import com.getbouncer.cardscan.base.ssd.domain.SizeAndCenter;
+import com.getbouncer.cardscan.base.util.ArrayExtensions;
 
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 
 import java.util.ArrayList;
 import java.util.Map;
+
+import kotlin.jvm.functions.Function1;
 
 
 public class SSDOcrDetect {
@@ -38,39 +43,59 @@ public class SSDOcrDetect {
     }
 
     private String ssdOutputToPredictions(Bitmap image, boolean strict){
-        ArrUtils arrUtils = new ArrUtils();
-
-        float[][] k_boxes = arrUtils.rearrangeOCRArray(ssdOcrModel.outputLocations, SSDOcrModel.featureMapSizes,
+        float[][] k_boxes = SSD.rearrangeOCRArray(ssdOcrModel.outputLocations, SSDOcrModel.FEATURE_MAP_SIZES,
                 SSDOcrModel.NUM_OF_PRIORS_PER_ACTIVATION, SSDOcrModel.NUM_OF_COORDINATES);
-        k_boxes = arrUtils.reshape(k_boxes, SSDOcrModel.NUM_OF_PRIORS, SSDOcrModel.NUM_OF_COORDINATES);
-        k_boxes = arrUtils.convertLocationsToBoxes(k_boxes, priors,
-                SSDOcrModel.CENTER_VARIANCE, SSDOcrModel.SIZE_VARIANCE);
-        k_boxes = arrUtils.centerFormToCornerForm(k_boxes);
-        float[][] k_scores = arrUtils.rearrangeOCRArray(ssdOcrModel.outputClasses, SSDOcrModel.featureMapSizes,
-                SSDOcrModel.NUM_OF_PRIORS_PER_ACTIVATION, SSDOcrModel.NUM_OF_CLASSES);
-        k_scores = arrUtils.reshape(k_scores, SSDOcrModel.NUM_OF_PRIORS, SSDOcrModel.NUM_OF_CLASSES);
-        k_scores = arrUtils.softmax2D(k_scores);
+        k_boxes = ArrayExtensions.reshape(k_boxes, SSDOcrModel.NUM_OF_COORDINATES);
+        SizeAndCenter.adjustLocations(k_boxes, priors, SSDOcrModel.CENTER_VARIANCE, SSDOcrModel.SIZE_VARIANCE);
+        SizeAndCenter.toRectForm(k_boxes);
 
-        PredictionAPI predAPI = new PredictionAPI();
-        Result result = predAPI.predictionAPI(k_scores, k_boxes, SSDOcrModel.PROB_THRESHOLD,
-                SSDOcrModel.IOU_THRESHOLD, SSDOcrModel.CANDIDATE_SIZE, SSDOcrModel.TOP_K);
-        if (result.pickedBoxProbs.size() != 0 && result.pickedLabels.size() != 0)
-        {
-            for (int i = 0; i < result.pickedBoxProbs.size(); ++i){
-                DetectedOcrBox ocrBox = new DetectedOcrBox(
-                        result.pickedBoxes.get(i)[0], result.pickedBoxes.get(i)[1],
-                        result.pickedBoxes.get(i)[2], result.pickedBoxes.get(i)[3],result.pickedBoxProbs.get(i),
-                        image.getWidth(), image.getHeight(),result.pickedLabels.get(i));
-                objectBoxes.add(ocrBox);
+        float[][] k_scores = SSD.rearrangeOCRArray(ssdOcrModel.outputClasses, SSDOcrModel.FEATURE_MAP_SIZES,
+                SSDOcrModel.NUM_OF_PRIORS_PER_ACTIVATION, SSDOcrModel.NUM_OF_CLASSES);
+        k_scores = ArrayExtensions.reshape(k_scores, SSDOcrModel.NUM_OF_CLASSES);
+        ClassifierScores.softMax2D(k_scores);
+
+        List<DetectionBox> detectionBoxes = SSD.extractPredictions(
+            k_scores,
+            k_boxes,
+            new Size(image.getWidth(), image.getHeight()),
+            SSDOcrModel.PROB_THRESHOLD,
+            SSDOcrModel.IOU_THRESHOLD,
+            SSDOcrModel.TOP_K,
+            new Function1<Integer, Integer>() {
+                @Override
+                public Integer invoke(Integer o) {
+                    if (o == 10) {
+                        return 0;
+                    } else {
+                        return o;
+                    }
+                }
             }
+        );
+
+        Collections.sort(detectionBoxes, new Comparator<DetectionBox>() {
+            @Override
+            public int compare(DetectionBox o1, DetectionBox o2) {
+                return Float.compare(o1.getRect().left, o2.getRect().left);
+            }
+        });
+
+        for (DetectionBox detectionBox : detectionBoxes) {
+            objectBoxes.add(new DetectedOcrBox(
+                    detectionBox.getRect().left,
+                    detectionBox.getRect().top,
+                    detectionBox.getRect().right,
+                    detectionBox.getRect().bottom,
+                    detectionBox.getConfidence(),
+                    detectionBox.getImageSize().getWidth(),
+                    detectionBox.getImageSize().getHeight(),
+                    detectionBox.getLabel()
+            ));
         }
-        String numberOCR = "";
-        Collections.sort(objectBoxes);
+
+        String numberOCR;
         StringBuilder num = new StringBuilder();
-        for (DetectedOcrBox box : objectBoxes){
-            if (box.label == 10){
-                box.label = 0;
-            }
+        for (DetectedOcrBox box : objectBoxes) {
             num.append(box.label);
         }
         if (CreditCardUtils.isValidCardNumber(num.toString())){
@@ -181,7 +206,7 @@ public class SSDOcrDetect {
                      * We generate these once and use for all the frame
                      */
                     if ( priors == null){
-                        priors = OcrPriorsGen.combinePriors();
+                        priors = OcrPriorsGenerator.combinePriors();
                     }
 
                 }
@@ -217,7 +242,7 @@ public class SSDOcrDetect {
                      * We generate these once and use for all the frame
                      */
                     if ( priors == null){
-                        priors = OcrPriorsGen.combinePriors();
+                        priors = OcrPriorsGenerator.combinePriors();
                     }
 
                 }

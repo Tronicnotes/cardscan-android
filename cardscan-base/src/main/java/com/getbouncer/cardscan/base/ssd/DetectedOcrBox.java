@@ -5,7 +5,7 @@ import android.graphics.RectF;
 import org.json.JSONObject;
 
 
-public class DetectedOcrBox implements Comparable<DetectedOcrBox> {
+public class DetectedOcrBox {
     public float XMin, YMin, XMax, YMax;
     public float confidence;
     public int label;
@@ -27,10 +27,5 @@ public class DetectedOcrBox implements Comparable<DetectedOcrBox> {
 
     public JSONObject toJson() {
         return new JSONObject();
-    }
-
-    @Override
-    public int compareTo(DetectedOcrBox detectedOcrBox) {
-        return Float.compare(this.XMin, detectedOcrBox.XMin);
     }
 }
